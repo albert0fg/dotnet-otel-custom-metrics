@@ -1,0 +1,267 @@
+## ─────────────────────────────────────────────────────────────────────────────
+## OTel Custom Metrics demo — Kubernetes manifest
+##
+## WHAT THIS DOES
+##   Deploys a .NET 8 ASP.NET Core app with OpenTelemetry zero-code
+##   auto-instrumentation that exports custom metrics via OTLP to any
+##   compatible collector (Grafana Alloy, OpenTelemetry Collector, …).
+##
+## BEFORE APPLYING — change the values marked with  ← CHANGE THIS
+##   1. namespace name (default: otel-demo)
+##   2. OTEL_DOTNET_AUTO_METRICS_ADDITIONAL_SOURCES → your Meter name
+##   3. OTEL_EXPORTER_OTLP_ENDPOINT                 → your collector endpoint
+##   4. OTEL_SERVICE_NAME                            → your service name
+##   5. OTEL_RESOURCE_ATTRIBUTES                     → your resource labels
+##
+## ARCHITECTURE (no external registry needed — fully in-cluster build)
+##   init/build-app  : dotnet/sdk:8.0  — compiles the app from the ConfigMap
+##   init/setup-otel : dotnet/sdk:8.0  — downloads OTel auto-instrumentation
+##   main/demo       : dotnet/aspnet:8.0 — runs the app with the startup hook
+## ─────────────────────────────────────────────────────────────────────────────
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-demo   # ← CHANGE THIS to your preferred namespace
+
+---
+# ── Source code ConfigMap ─────────────────────────────────────────────────────
+# The build init container copies these files and runs dotnet publish.
+# To use your own application instead, replace the content of Program.cs and
+# app.csproj, or mount a different ConfigMap / PVC with your source tree.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-demo-src
+  namespace: otel-demo   # ← keep in sync with Namespace above
+data:
+  Program.cs: |
+    using System.Diagnostics.Metrics;
+
+    // ── CHANGE: use your own Meter name ──────────────────────────────────────
+    // Must match OTEL_DOTNET_AUTO_METRICS_ADDITIONAL_SOURCES below.
+    const string METER_NAME = "MyCompany.MyService";
+
+    var meter = new Meter(METER_NAME, "1.0.0");
+
+    var requestCounter = meter.CreateCounter<long>(
+        name: "my.custom.counter",
+        unit: "{requests}",
+        description: "Example custom counter");
+
+    var builder = WebApplication.CreateBuilder(args);
+    var app = builder.Build();
+
+    app.MapGet("/", () =>
+    {
+        requestCounter.Add(1, new KeyValuePair<string, object?>("endpoint", "root"));
+        return Results.Ok(new { message = "counter incremented", meter = METER_NAME });
+    });
+
+    app.MapGet("/healthz", () => Results.Ok("healthy"));
+
+    _ = Task.Run(async () =>
+    {
+        while (true)
+        {
+            requestCounter.Add(1, new KeyValuePair<string, object?>("endpoint", "background"));
+            await Task.Delay(TimeSpan.FromSeconds(5));
+        }
+    });
+
+    app.Run();
+
+  app.csproj: |
+    <Project Sdk="Microsoft.NET.Sdk.Web">
+      <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <InvariantGlobalization>true</InvariantGlobalization>
+      </PropertyGroup>
+    </Project>
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-demo
+  namespace: otel-demo   # ← keep in sync with Namespace above
+  labels:
+    app: otel-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-demo
+  template:
+    metadata:
+      labels:
+        app: otel-demo
+    spec:
+      initContainers:
+
+        # ── Stage 1: build the .NET app ───────────────────────────────────────
+        - name: build-app
+          image: mcr.microsoft.com/dotnet/sdk:8.0
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              mkdir -p /build
+              cp /src/Program.cs /build/Program.cs
+              cp /src/app.csproj /build/app.csproj
+              cd /build
+              dotnet publish -c Release -o /app/publish --self-contained false
+              echo "Build complete"; ls /app/publish/
+          volumeMounts:
+            - name: src
+              mountPath: /src
+            - name: app
+              mountPath: /app
+
+        # ── Stage 2: download OTel .NET auto-instrumentation ─────────────────
+        # Adjust OTEL_VERSION if your base image uses a different version.
+        # Use linux-musl-x64 instead of linux-glibc-x64 for Alpine-based images.
+        - name: setup-otel
+          image: mcr.microsoft.com/dotnet/sdk:8.0
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              OTEL_VERSION=1.9.0
+              ZIP=/tmp/otel.zip
+              DEST=/otel-dotnet-auto
+
+              echo "=== Downloading OTel .NET auto-instrumentation v${OTEL_VERSION} ==="
+              # glibc variant for debian/ubuntu-based images (dotnet/aspnet:8.0)
+              # use opentelemetry-dotnet-instrumentation-linux-musl-x64.zip for Alpine
+              apt-get update -qq && apt-get install -y -qq unzip
+              curl -fsSL -o "$ZIP" \
+                "https://github.com/open-telemetry/opentelemetry-dotnet-instrumentation/releases/download/v${OTEL_VERSION}/opentelemetry-dotnet-instrumentation-linux-glibc-x64.zip"
+              mkdir -p "$DEST"
+              unzip -q "$ZIP" -d "$DEST"
+              echo "=== OTel setup complete ==="
+          volumeMounts:
+            - name: otel
+              mountPath: /otel-dotnet-auto
+
+      containers:
+        - name: app
+          image: mcr.microsoft.com/dotnet/aspnet:8.0
+          command:
+            - dotnet
+            - /app/publish/app.dll
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+
+            # ── OTel auto-instrumentation bootstrap ───────────────────────────
+            # These four variables load the startup hook into the .NET process.
+            # Do NOT change these paths — they must point to the OTel volume.
+            - name: DOTNET_ADDITIONAL_DEPS
+              value: "/otel-dotnet-auto/AdditionalDeps"
+            - name: DOTNET_SHARED_STORE
+              value: "/otel-dotnet-auto/store"
+            - name: DOTNET_STARTUP_HOOKS
+              value: "/otel-dotnet-auto/net/OpenTelemetry.AutoInstrumentation.StartupHook.dll"
+            - name: OTEL_DOTNET_AUTO_HOME
+              value: "/otel-dotnet-auto"
+
+            # ── Which Meters to capture ────────────────────────────────────────
+            # ← CHANGE THIS: set to your Meter name (exact match or comma list).
+            # The value must match what you pass to `new Meter(...)` in your code.
+            # Wildcards like "MyCompany.*" capture all meters with that prefix.
+            - name: OTEL_DOTNET_AUTO_METRICS_ADDITIONAL_SOURCES
+              value: "MyCompany.MyService"   # ← CHANGE THIS
+
+            # ── OTLP exporter endpoint ─────────────────────────────────────────
+            # ← CHANGE THIS: point to your collector (Alloy, OTel Collector, …)
+            # Grafana Alloy example:
+            #   http://grafana-k8s-monitoring-alloy-receiver.<namespace>.svc.cluster.local:4317
+            # Standalone OTel Collector example:
+            #   http://otel-collector.observability.svc.cluster.local:4317
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://your-collector.your-namespace.svc.cluster.local:4317"   # ← CHANGE THIS
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+
+            # ── What to export ─────────────────────────────────────────────────
+            # Set OTEL_TRACES_EXPORTER=otlp if you also want traces via OTel.
+            # If you already use Datadog for traces, keep it as "none".
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_TRACES_EXPORTER
+              value: "none"
+            - name: OTEL_LOGS_EXPORTER
+              value: "none"
+
+            # ── Service identity (appears as labels in Grafana) ────────────────
+            # ← CHANGE THIS: use your actual service name and attributes
+            - name: OTEL_SERVICE_NAME
+              value: "my-service-name"   # ← CHANGE THIS
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=my-namespace,deployment.environment=production"   # ← CHANGE THIS
+
+            # ── Export interval ────────────────────────────────────────────────
+            # 15000 ms = 15 s (good for demos). For production use 60000 (60 s).
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "15000"
+
+            # ── ASP.NET Core ───────────────────────────────────────────────────
+            - name: ASPNETCORE_URLS
+              value: "http://+:8080"
+            - name: DOTNET_SYSTEM_GLOBALIZATION_INVARIANT
+              value: "1"
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: app
+              mountPath: /app
+            - name: otel
+              mountPath: /otel-dotnet-auto
+
+      volumes:
+        - name: src
+          configMap:
+            name: otel-demo-src
+        - name: app
+          emptyDir: {}
+        - name: otel
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-demo
+  namespace: otel-demo   # ← keep in sync with Namespace above
+spec:
+  selector:
+    app: otel-demo
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!--
+      InvariantGlobalization avoids the ICU library dependency on Alpine images.
+      Remove this line if you need culture-sensitive string operations.
+    -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!--
+    No OpenTelemetry NuGet packages are needed here.
+    System.Diagnostics.Metrics is part of the .NET 8 BCL.
+    The OTel auto-instrumentation startup hook handles everything externally.
+
+    ⚠️  Do NOT add System.Diagnostics.DiagnosticSource 9.x on a .NET 8 app:
+        it can conflict with the version bundled inside the auto-instrumentation.
+  -->
+</Project>
