@@ -49,23 +49,36 @@ The build happens inside the cluster via init containers using only public Micro
 
 ## Quick start
 
-### 1 — Set the four values that must change
+> **The YAML is self-contained.** The application source code lives inside the ConfigMap
+> in `k8s/deploy.yaml`. A single `kubectl apply` builds and deploys everything.
+> You only need to set **one mandatory value** before applying.
 
-Open `k8s/deploy.yaml` and update every line marked `# ← CHANGE THIS`:
+### 1 — Set the OTLP endpoint (mandatory)
 
-| Variable | What to put |
-|----------|-------------|
-| `namespace` (3 places) | Your preferred Kubernetes namespace |
-| `OTEL_DOTNET_AUTO_METRICS_ADDITIONAL_SOURCES` | The `Meter` name used in `Program.cs` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Your collector's gRPC endpoint |
-| `OTEL_SERVICE_NAME` | How the service should appear in Grafana |
+Open `k8s/deploy.yaml` and change the `OTEL_EXPORTER_OTLP_ENDPOINT` value to point to
+your collector. Everything else is optional — the demo works with the placeholder defaults.
+
+```yaml
+# k8s/deploy.yaml — the only line you must change:
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: "http://your-collector.your-namespace.svc.cluster.local:4317"  # ← change this
+```
 
 **Finding your Alloy receiver endpoint** (if using `grafana-k8s-monitoring` Helm chart):
 
 ```bash
-kubectl get svc -n <monitoring-namespace> | grep alloy-receiver
-# Typically: grafana-k8s-monitoring-alloy-receiver.<monitoring-namespace>.svc.cluster.local:4317
+kubectl get svc -A | grep alloy-receiver
+# → grafana-k8s-monitoring-alloy-receiver  <monitoring-ns>  4317/TCP ...
+# Endpoint: http://grafana-k8s-monitoring-alloy-receiver.<monitoring-ns>.svc.cluster.local:4317
 ```
+
+**Other optional values** (change if you want custom names in Grafana):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `namespace` (3 places) | `otel-demo` | Kubernetes namespace |
+| `OTEL_DOTNET_AUTO_METRICS_ADDITIONAL_SOURCES` | `MyCompany.MyService` | Meter name to capture |
+| `OTEL_SERVICE_NAME` | `my-service-name` | Label in Grafana |
 
 ### 2 — Deploy
 
