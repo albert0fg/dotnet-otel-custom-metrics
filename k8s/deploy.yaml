@@ -181,14 +181,23 @@ spec:
 
             # ── OTLP exporter endpoint ─────────────────────────────────────────
             # ← CHANGE THIS: point to your collector (Alloy, OTel Collector, …)
-            # Grafana Alloy example:
-            #   http://grafana-k8s-monitoring-alloy-receiver.<namespace>.svc.cluster.local:4317
-            # Standalone OTel Collector example:
-            #   http://otel-collector.observability.svc.cluster.local:4317
+            #
+            # Two protocol options (both tested and working):
+            #
+            #   http/protobuf  →  port 4318  (HTTP + Protobuf, widely supported)
+            #   grpc           →  port 4317  (gRPC, slightly more efficient)
+            #
+            # Grafana Alloy examples:
+            #   http/protobuf: http://grafana-k8s-monitoring-alloy-receiver.<ns>.svc.cluster.local:4318
+            #   grpc:          http://grafana-k8s-monitoring-alloy-receiver.<ns>.svc.cluster.local:4317
+            #
+            # Standalone OTel Collector examples:
+            #   http/protobuf: http://otel-collector.observability.svc.cluster.local:4318
+            #   grpc:          http://otel-collector.observability.svc.cluster.local:4317
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://your-collector.your-namespace.svc.cluster.local:4317"   # ← CHANGE THIS
+              value: "http://your-collector.your-namespace.svc.cluster.local:4318"   # ← CHANGE THIS
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
-              value: "grpc"
+              value: "http/protobuf"   # alternatives: "grpc" (use port 4317 above)
 
             # ── What to export ─────────────────────────────────────────────────
             # Set OTEL_TRACES_EXPORTER=otlp if you also want traces via OTel.

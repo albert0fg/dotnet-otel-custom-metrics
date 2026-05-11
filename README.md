@@ -68,9 +68,16 @@ your collector. Everything else is optional — the demo works with the placehol
 
 ```bash
 kubectl get svc -A | grep alloy-receiver
-# → grafana-k8s-monitoring-alloy-receiver  <monitoring-ns>  4317/TCP ...
-# Endpoint: http://grafana-k8s-monitoring-alloy-receiver.<monitoring-ns>.svc.cluster.local:4317
+# → grafana-k8s-monitoring-alloy-receiver  <monitoring-ns>  4317/TCP,4318/TCP ...
 ```
+
+The default protocol in this repo is `http/protobuf` on port **4318**.
+To use gRPC instead, change the port to **4317** and set `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`.
+
+| Protocol | Port | Notes |
+|----------|------|-------|
+| `http/protobuf` | 4318 | Default in this repo. Works through most proxies and firewalls. |
+| `grpc` | 4317 | Slightly more efficient. Requires HTTP/2 end-to-end. |
 
 **Other optional values** (change if you want custom names in Grafana):
 
